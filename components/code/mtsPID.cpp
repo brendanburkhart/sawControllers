@@ -533,7 +533,7 @@ void mtsPID::Run(void)
                 *setpoint_f = c->p_gain * (*p_error)
                              + c->d_gain * (*v_error)
                              + c->i_gain * (*i_error)
-                             + c->f_gain * (*feed_forward);
+                             + c->f_gain * (*feed_forward)
                              + *disturbance;
 
                 // add constant offsets in PID mode only and after non-linear scaling

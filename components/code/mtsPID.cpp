@@ -211,6 +211,14 @@ void mtsPID::Configure(const std::string & filename)
                                          << filename << "\"\n" << std::endl;
                 exit(EXIT_FAILURE);
             }
+            if (c.effort_low_pass_cutoff_frequency <= 0.0) {
+                CMN_LOG_CLASS_INIT_ERROR << "Configure " << this->GetName()
+                                         << ": effort low pass filter cut off value for " << c.index
+                                         << " must be in ]0, inf[ range, found "
+                                         << c.effort_low_pass_cutoff_frequency << " in configuration file \""
+                                         << filename << "\"\n" << std::endl;
+                exit(EXIT_FAILURE);
+            }
         }
 
     } catch (std::exception & e) {
@@ -274,6 +282,7 @@ void mtsPID::Configure(const std::string & filename)
     // default: 1 so there's no filtering
     m_setpoint_filtered_v.SetSize(m_number_of_joints, 0.0);
     m_setpoint_filtered_v_previous.SetSize(m_number_of_joints, 0.0);
+    m_measured_effort_filtered.SetSize(m_number_of_joints, 0.0);
 
     // effort mode
     m_effort_mode.SetSize(m_number_of_joints);
@@ -507,7 +516,6 @@ void mtsPID::Run(void)
                     *i_error = -c->i_limit;
                 }
 
-
                 // compute disturbance observer before setpoint_f is changed
                 if (c->use_disturbance_observer) {
                     const double d_t = this->GetPeriodicity();
@@ -517,22 +525,19 @@ void mtsPID::Run(void)
                         * c->disturbance_cutoff * d_t;
                     *disturbance = *disturbance_state
                         - c->nominal_mass * c->disturbance_cutoff * *measured_v;
-                    *setpoint_f = *disturbance;
                 } else {
                     *disturbance = 0.0;
-                    *setpoint_f = 0.0;
                 }
 
                 // compute PID effort
-                *setpoint_f +=
-                    c->p_gain * (*p_error) + c->d_gain * (*v_error) + c->i_gain * (*i_error);
+                *setpoint_f = c->p_gain * (*p_error)
+                             + c->d_gain * (*v_error)
+                             + c->i_gain * (*i_error)
+                             + c->f_gain * (*feed_forward);
+                             + *disturbance;
 
                 // add constant offsets in PID mode only and after non-linear scaling
                 *setpoint_f += c->offset;
-
-                // add feedForward
-                *setpoint_f += *feed_forward;
-
             } // end of PID mode
 
             // apply effort limits if needed
@@ -742,6 +747,7 @@ void mtsPID::enable(const bool & enable)
         m_feed_forward_jf.ForceTorque().Zeros();
         m_has_setpoint_v = false;
         m_setpoint_filtered_v_previous.Zeros();
+        m_measured_effort_filtered.Zeros();
         // set valid flags
         m_error_state.SetValid(true);
     } else {
@@ -798,25 +804,8 @@ void mtsPID::get_IO_data(void)
         } else {
             // evaluate velocity based on positions sent by arm/client
             const double dt = mCommandTime - mPreviousCommandTime;
-            if (dt > 0) {
-                vctDoubleVec::const_iterator currentPosition = m_setpoint_js.Position().begin();
-                vctDoubleVec::const_iterator previousPosition = m_measured_js_previous.Position().begin();
-                vctBoolVec::const_iterator effortMode = m_effort_mode.begin();
-                vctDoubleVec::iterator velocity;
-                const vctDoubleVec::iterator end = m_measured_js.Velocity().end();
-                for (velocity = m_measured_js.Velocity().begin();
-                     velocity != end;
-                     ++currentPosition,
-                         ++previousPosition,
-                         ++effortMode,
-                         ++velocity) {
-                    if (*effortMode) {
-                        *velocity = 0.0;
-                    } else {
-                        *velocity = (*currentPosition - *previousPosition) / dt;
-                    }
-                }
-            }
+            estimateVelocities(dt, m_setpoint_js.Position(), m_measured_js_previous.Position(),
+                               m_effort_mode, m_measured_js.Velocity());
         }
         // timestamp using last know position
         m_measured_js_previous = m_setpoint_js;
@@ -826,28 +815,37 @@ void mtsPID::get_IO_data(void)
     // talking to actual robot
     else {
         IO.measured_js(m_measured_js);
-        // velocities are not provided by the robot
-        if (m_measured_js.Velocity().size() == 0) {
-            // IO level doesn't provide velocities
-            // so estimate it from measured positions.  this
-            // estimation is very simple and likely noisy so try to
-            // avoid this case as much as possible
-            const double dt = m_measured_js.Timestamp() - m_measured_js_previous.Timestamp();
-            if (dt > 0) {
-                vctDoubleVec::const_iterator currentPosition = m_measured_js.Position().begin();
-                vctDoubleVec::const_iterator previousPosition = m_measured_js_previous.Position().begin();
-                vctDoubleVec::iterator velocity;
-                const vctDoubleVec::iterator end = m_measured_js.Velocity().end();
-                for (velocity = m_measured_js.Velocity().begin();
-                     velocity != end;
-                     ++currentPosition,
-                         ++previousPosition,
-                         ++velocity) {
-                    *velocity = (*currentPosition - *previousPosition) / dt;
-                }
+
+        const double dt = m_measured_js.Timestamp() - m_measured_js_previous.Timestamp();
+
+        if (m_measured_js.Effort().Any() && dt > 0) {
+            // apply low-pass filter to measured effort
+            vctDoubleVec::iterator filteredEffort = m_measured_effort_filtered.begin();
+            auto c = m_configuration.cbegin();
+            vctDoubleVec::iterator effort;
+            const vctDoubleVec::const_iterator end = m_measured_js.Effort().end();
+            for (effort = m_measured_js.Effort().begin();
+                    effort != end;
+                    ++effort,
+                    ++filteredEffort,
+                    ++c) {
+                // as cutoff frequency goes to +inf, beta goes to zero
+                const double beta = std::exp(-c->effort_low_pass_cutoff_frequency * dt);
+                *filteredEffort = beta * *filteredEffort + (1.0 - beta) * *effort;
+                *effort = *filteredEffort;
             }
-        } // end of software base velocity estimation based on
-        // measured positions
+        }
+
+        // IO level doesn't provide velocities
+        // so estimate it from measured positions.  this
+        // estimation is very simple and likely noisy so try to
+        // avoid this case as much as possible
+        if (m_measured_js.Velocity().size() == 0) {
+            vctBoolVec dontZero(m_measured_js.Velocity().size());
+            dontZero.Zeros(); // fill with (bool)0 aka false so we compute all velocities
+            estimateVelocities(dt, m_measured_js.Position(), m_measured_js_previous.Position(),
+                               dontZero, m_measured_js.Velocity());
+        }
 
         // save previous position with timestamp
         m_measured_js_previous = m_measured_js;
@@ -907,5 +905,46 @@ void mtsPID::CheckLowerUpper(const vctDoubleVec & lower, const vctDoubleVec & up
                                      << " - upper: " << upper << std::endl;
             mInterface->SendWarning(this->GetName() + "::" + methodName + ": lower limit greater or equal to upper limit");
         }
+    }
+}
+
+void mtsPID::estimateVelocities(double dt, const vctDoubleVec& currentPositions, const vctDoubleVec& previousPositions,
+                                const vctBoolVec& zeroOut, vctDoubleVec& velocities) {
+    if (dt <= 0.0) {
+        return;
+    }
+
+    vctDoubleVec::const_iterator currentPosition = currentPositions.begin();
+    vctDoubleVec::const_iterator previousPosition = previousPositions.begin();
+    vctBoolVec::const_iterator zero = zeroOut.begin();
+    vctDoubleVec::iterator velocity;
+    const vctDoubleVec::iterator end = velocities.end();
+    for (velocity = velocities.begin();
+            velocity != end;
+            ++currentPosition,
+            ++previousPosition,
+            ++zero,
+            ++velocity) {
+        if (*zero) {
+            *velocity = 0.0;
+        } else {
+            *velocity = (*currentPosition - *previousPosition) / dt;
+        }
+    }
+}
+
+void lowPassFilter(double dt, const vctDoubleVec& cuttoffFrequencies, const vctDoubleVec& rawValues, vctDoubleVec& filteredValues) {
+    vctDoubleVec::iterator filtered;
+    vctDoubleVec::const_iterator raw = rawValues.begin();
+    vctDoubleVec::const_iterator cutoff = cuttoffFrequencies.begin();
+    const vctDoubleVec::const_iterator end = filteredValues.end();
+    for (filtered = filteredValues.begin();
+            filtered != end;
+            ++filtered,
+            ++raw,
+            ++cutoff) {
+        // as cutoff frequency goes to +inf, beta goes to zero
+        const double beta = std::exp(-(*cutoff) * dt);
+        *filtered = beta * *filtered + (1.0 - beta) * *raw;
     }
 }

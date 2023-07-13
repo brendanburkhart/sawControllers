@@ -86,6 +86,20 @@ class {
         visibility public;
     }
     member {
+        name effort_low_pass_cutoff_frequency;
+        type double;
+        default 10000;
+        visibility public;
+        description cutoff frequency for low pass filter on measured effort - set to large value (>1e5) to disable filter;
+    }
+    member {
+        name f_gain;
+        type double;
+        default 0.0;
+        visibility public;
+        description gain applied to effort setpoint;
+    }
+    member {
         name use_disturbance_observer;
         type bool;
         default false;

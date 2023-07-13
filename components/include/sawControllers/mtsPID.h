@@ -99,6 +99,8 @@ protected:
         m_setpoint_filtered_v,
         m_setpoint_filtered_v_previous;
 
+    vctDoubleVec m_measured_effort_filtered;
+
     //! Enable mtsPID controller
     bool m_enabled = false;
 
@@ -238,6 +240,12 @@ protected:
       to upper limit. */
     void CheckLowerUpper(const vctDoubleVec & lower, const vctDoubleVec & upper,
                          const std::string & methodName);
+
+private:
+    void estimateVelocities(double dt, const vctDoubleVec& currentPositions, const vctDoubleVec& previousPositions,
+                            const vctBoolVec& zeroOut, vctDoubleVec& velocities);
+
+    //void lowPassFilter(double dt, double cutoffFrequency, const vctDoubleVec& rawValues, vctDoubleVec& filteredValues);
 };
 
 CMN_DECLARE_SERVICES_INSTANTIATION(mtsPID);

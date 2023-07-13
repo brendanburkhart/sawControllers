@@ -245,7 +245,7 @@ private:
     void estimateVelocities(double dt, const vctDoubleVec& currentPositions, const vctDoubleVec& previousPositions,
                             const vctBoolVec& zeroOut, vctDoubleVec& velocities);
 
-    //void lowPassFilter(double dt, double cutoffFrequency, const vctDoubleVec& rawValues, vctDoubleVec& filteredValues);
+    void lowPassFilter(double dt, double cutoffFrequency, const vctDoubleVec& rawValues, vctDoubleVec& filteredValues);
 };
 
 CMN_DECLARE_SERVICES_INSTANTIATION(mtsPID);

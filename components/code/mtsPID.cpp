@@ -503,6 +503,7 @@ void mtsPID::Run(void)
                         _setpoint_v = *filtered_setpoint_v;
                         *filtered_setpoint_v_previous = *filtered_setpoint_v;
                     }
+
                     *v_error = _setpoint_v - (*measured_v);
                 }
 
@@ -519,12 +520,9 @@ void mtsPID::Run(void)
                 // compute disturbance observer before setpoint_f is changed
                 if (c->use_disturbance_observer) {
                     const double d_t = this->GetPeriodicity();
-                    const double dis_tmp = *setpoint_f
-                        + c->nominal_mass * c->disturbance_cutoff * *measured_v;
-                    *disturbance_state += (dis_tmp - *disturbance_state)
-                        * c->disturbance_cutoff * d_t;
-                    *disturbance = *disturbance_state
-                        - c->nominal_mass * c->disturbance_cutoff * *measured_v;
+                    const double dis_tmp = *setpoint_f + c->nominal_mass * c->disturbance_cutoff * *measured_v;
+                    *disturbance_state += (dis_tmp - *disturbance_state) * c->disturbance_cutoff * d_t;
+                    *disturbance = *disturbance_state - c->nominal_mass * c->disturbance_cutoff * *measured_v;
                 } else {
                     *disturbance = 0.0;
                 }
@@ -533,8 +531,9 @@ void mtsPID::Run(void)
                 *setpoint_f = c->p_gain * (*p_error)
                              + c->d_gain * (*v_error)
                              + c->i_gain * (*i_error)
+                             + c->b_gain * (-*measured_v)
                              + c->f_gain * (*feed_forward)
-                             + *disturbance;
+                             + (*disturbance);
 
                 // add constant offsets in PID mode only and after non-linear scaling
                 *setpoint_f += c->offset;
@@ -816,23 +815,28 @@ void mtsPID::get_IO_data(void)
     else {
         IO.measured_js(m_measured_js);
 
-        const double dt = m_measured_js.Timestamp() - m_measured_js_previous.Timestamp();
-
-        if (m_measured_js.Effort().Any() && dt > 0) {
+        if (m_measured_js.Effort().Any()) {
             // apply low-pass filter to measured effort
             vctDoubleVec::iterator filteredEffort = m_measured_effort_filtered.begin();
             auto c = m_configuration.cbegin();
             vctDoubleVec::iterator effort;
             const vctDoubleVec::const_iterator end = m_measured_js.Effort().end();
+            vctDoubleVec::const_iterator disturbance = m_error_state.Effort().begin();
             for (effort = m_measured_js.Effort().begin();
                     effort != end;
                     ++effort,
                     ++filteredEffort,
+                    ++disturbance,
                     ++c) {
-                // as cutoff frequency goes to +inf, beta goes to zero
-                const double beta = std::exp(-c->effort_low_pass_cutoff_frequency * dt);
-                *filteredEffort = beta * *filteredEffort + (1.0 - beta) * *effort;
-                *effort = *filteredEffort;
+                if (c->use_disturbance_observer) {
+                    *effort = *disturbance;
+                } else {
+                    // as cutoff frequency goes to +inf, beta goes to zero
+                    const double expected_dt = this->GetPeriodicity();
+                    const double beta = std::exp(-c->effort_low_pass_cutoff_frequency * expected_dt);
+                    *filteredEffort = beta * *filteredEffort + (1.0 - beta) * *effort;
+                    *effort = *filteredEffort;
+                }
             }
         }
 
@@ -841,9 +845,10 @@ void mtsPID::get_IO_data(void)
         // estimation is very simple and likely noisy so try to
         // avoid this case as much as possible
         if (m_measured_js.Velocity().size() == 0) {
+            const double measured_dt = m_measured_js.Timestamp() - m_measured_js_previous.Timestamp();
             vctBoolVec dontZero(m_measured_js.Velocity().size());
             dontZero.Zeros(); // fill with (bool)0 aka false so we compute all velocities
-            estimateVelocities(dt, m_measured_js.Position(), m_measured_js_previous.Position(),
+            estimateVelocities(measured_dt, m_measured_js.Position(), m_measured_js_previous.Position(),
                                dontZero, m_measured_js.Velocity());
         }
 

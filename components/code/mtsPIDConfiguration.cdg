@@ -39,6 +39,13 @@ class {
         description gain applied to error in velocity;
     }
     member {
+        name b_gain;
+        type double;
+        default 0.0;
+        visibility public;
+        description gain for velocity damping injection;
+    }
+    member {
         name i_gain;
         type double;
         visibility public;

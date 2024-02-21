@@ -937,19 +937,3 @@ void mtsPID::estimateVelocities(double dt, const vctDoubleVec& currentPositions,
         }
     }
 }
-
-void lowPassFilter(double dt, const vctDoubleVec& cuttoffFrequencies, const vctDoubleVec& rawValues, vctDoubleVec& filteredValues) {
-    vctDoubleVec::iterator filtered;
-    vctDoubleVec::const_iterator raw = rawValues.begin();
-    vctDoubleVec::const_iterator cutoff = cuttoffFrequencies.begin();
-    const vctDoubleVec::const_iterator end = filteredValues.end();
-    for (filtered = filteredValues.begin();
-            filtered != end;
-            ++filtered,
-            ++raw,
-            ++cutoff) {
-        // as cutoff frequency goes to +inf, beta goes to zero
-        const double beta = std::exp(-(*cutoff) * dt);
-        *filtered = beta * *filtered + (1.0 - beta) * *raw;
-    }
-}
